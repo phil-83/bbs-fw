@@ -163,6 +163,8 @@ static void load_default_config()
 	g_config.use_speed_sensor = 1;
 	g_config.use_shift_sensor = HAS_SHIFT_SENSOR_SUPPORT;
 	g_config.use_push_walk = 1;
+	g_config.use_pretension = 0;
+	g_config.pretension_speed_cutoff_kph = 16;
 	g_config.use_temperature_sensor = TEMPERATURE_SENSOR_CONTR | TEMPERATURE_SENSOR_MOTOR;
 
 	g_config.lights_mode = LIGHTS_MODE_DEFAULT;

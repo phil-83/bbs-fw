@@ -55,6 +55,11 @@ static int8_t temperature_motor_c;
 static uint16_t ramp_up_current_interval_ms;
 static uint32_t power_blocked_until_ms;
 
+static uint16_t pretension_cutoff_speed_rpm_x10;
+
+static uint16_t last_throttle_percent = 0;
+//static uint8_t smoothed_target_current = 0;
+
 void apply_pas_cadence(uint8_t* target_current, uint8_t throttle_percent);
 #if HAS_TORQUE_SENSOR
 void apply_pas_torque(uint8_t* target_current);
@@ -69,6 +74,8 @@ bool apply_shift_sensor_interrupt(uint8_t* target_current);
 bool apply_brake(uint8_t* target_current);
 void apply_current_ramp_up(uint8_t* target_current, bool enable);
 void apply_current_ramp_down(uint8_t* target_current, bool enable);
+
+void apply_pretension(uint8_t* target_current);
 
 bool check_power_block();
 void block_power_for(uint16_t ms);
@@ -105,6 +112,8 @@ void app_init()
 
 	speed_limit_ramp_interval_rpm_x10 = convert_wheel_speed_kph_to_rpm(SPEED_LIMIT_RAMP_DOWN_INTERVAL_KPH) * 10;
 
+	pretension_cutoff_speed_rpm_x10 = convert_wheel_speed_kph_to_rpm(g_config.pretension_speed_cutoff_kph) * 10;
+
 	cruise_paused = true;
 	operation_mode = OPERATION_MODE_DEFAULT;
 
@@ -135,6 +144,7 @@ void app_process()
 	}
 	else
 	{
+		apply_pretension(&target_current);
 		apply_pas_cadence(&target_current, throttle_percent);
 #if HAS_TORQUE_SENSOR
 		apply_pas_torque(&target_current);
@@ -166,7 +176,14 @@ void app_process()
 	bool is_braking = apply_brake(&target_current);
 	
 	apply_current_ramp_up(&target_current, is_limiting || !throttle_override);
-	apply_current_ramp_down(&target_current, !is_braking && !shift_limiting);
+	//apply_current_ramp_down(&target_current, !is_braking && !shift_limiting);
+	apply_current_ramp_down(&target_current, !is_braking && !shift_limiting && !throttle_override && last_throttle_percent < 1);
+
+	// Limit target cadance (motor rpm) if speed / shift limiting (in standard mode) - helps with speed limiting
+	if ((speed_limiting || shift_limiting) && operation_mode == OPERATION_MODE_DEFAULT )
+	{
+		target_cadence = target_cadence/2;
+	}
 
 	motor_set_target_speed(target_cadence);
 	motor_set_target_current(target_current);
@@ -188,8 +205,8 @@ void app_process()
 	{
 		lights_enable();
 	}
+	last_throttle_percent = throttle_percent;
 }
-
 
 void app_set_assist_level(uint8_t level)
 {
@@ -343,6 +360,17 @@ uint8_t app_get_temperature()
 	return (uint8_t)temp_max;
 }
 
+void apply_pretension(uint8_t* target_current)
+{
+	uint16_t current_speed_rpm_x10 = speed_sensor_get_rpm_x10();
+
+	//if (g_config.use_speed_sensor && g_config.use_pretension && current_speed_rpm_x10 > pretension_cutoff_speed_rpm_x10)
+	if (g_config.use_speed_sensor && g_config.use_pretension && current_speed_rpm_x10 > pretension_cutoff_speed_rpm_x10 && operation_mode == OPERATION_MODE_SPORT && assist_level != ASSIST_0)
+	{
+		*target_current = 1;
+	}
+	return;
+}
 
 void apply_pas_cadence(uint8_t* target_current, uint8_t throttle_percent)
 {
@@ -460,11 +488,24 @@ void apply_cruise(uint8_t* target_current, uint8_t throttle_percent)
 			cruise_block_throttle_return = true;
 		}
 
-		// unpause cruise if pedaling forward while engaging throttle > 50%
-		else if (cruise_paused && !cruise_block_throttle_return && throttle_percent > 50 && pas_is_pedaling_forwards() && pas_get_pulse_counter() > CRUISE_ENGAGE_PAS_PULSES)
+		// unpause cruise if pedaling forward while engaging throttle > 20%
+		else if (cruise_paused && !cruise_block_throttle_return && throttle_percent > 20 && pas_is_pedaling_forwards() && pas_get_pulse_counter() > CRUISE_ENGAGE_PAS_PULSES)
 		{
 			cruise_paused = false;
 			cruise_block_throttle_return = true;
+
+			// Set cruise control speed to current speed if cruise control speed has not been set previously
+			if (assist_level_data.max_wheel_speed_rpm_x10 == ((int32_t)global_speed_limit_rpm * assist_level_data.level.max_speed_percent) / 10)
+			{
+				assist_level_data.max_wheel_speed_rpm_x10 = speed_sensor_get_rpm_x10();
+			}
+
+			// Check if Cruise Speed hasn't already been set
+			if (assist_level_data.max_wheel_speed_rpm_x10 == ((int32_t)global_speed_limit_rpm * assist_level_data.level.max_speed_percent) / 10)
+			{
+				// Set cruise speed
+				assist_level_data.max_wheel_speed_rpm_x10 = speed_sensor_get_rpm_x10();
+			}
 		}
 
 		// reset flag tracking throttle to make sure throttle returns to idle position before engage/disenage cruise with throttle touch
@@ -479,9 +520,24 @@ void apply_cruise(uint8_t* target_current, uint8_t throttle_percent)
 		}
 		else
 		{
+			/*
 			if (assist_level_data.level.target_current_percent > *target_current)
 			{
 				*target_current = assist_level_data.level.target_current_percent;
+			}
+			*/
+			int32_t max_speed_ramp_low_rpm_x10 = assist_level_data.max_wheel_speed_rpm_x10 - speed_limit_ramp_interval_rpm_x10;
+			int32_t max_speed_ramp_high_rpm_x10 = assist_level_data.max_wheel_speed_rpm_x10 + speed_limit_ramp_interval_rpm_x10;
+			int32_t current_speed_rpm_x10 = speed_sensor_get_rpm_x10();
+			int32_t cruise_delta = assist_level_data.max_wheel_speed_rpm_x10 - current_speed_rpm_x10;
+			//int32_t cruise_delta = CLAMP(assist_level_data.max_wheel_speed_rpm_x10 - current_speed_rpm_x10, 0, assist_level_data.max_wheel_speed_rpm_x10);
+
+			// linear ramp of power depending on current speed compared with cruise speed.
+			uint8_t tmp = (uint8_t)MAP32(cruise_delta, 0, assist_level_data.max_wheel_speed_rpm_x10, 1, assist_level_data.level.target_current_percent);
+			if (tmp > *target_current)
+			{
+				*target_current = tmp;
+				// return true;
 			}
 		}
 	}
@@ -491,7 +547,9 @@ bool apply_throttle(uint8_t* target_current, uint8_t throttle_percent)
 {
 	if ((assist_level_data.level.flags & ASSIST_FLAG_THROTTLE) && throttle_percent > 0 && throttle_ok())
 	{
-		uint8_t current = (uint8_t)MAP16(throttle_percent, 0, 100, g_config.throttle_start_percent, assist_level_data.level.max_throttle_current_percent);
+		// Apply quadratic throttle
+		uint8_t quadratic_throttle = (uint8_t)((throttle_percent * throttle_percent) / 100);
+		uint8_t current = (uint8_t)MAP16(quadratic_throttle, 0, 100, g_config.throttle_start_percent, assist_level_data.level.max_throttle_current_percent);
 
 		// Throttle always overrides PAS if global speed limit is configured for throttle.
 		bool global_throttle_limit_active =
@@ -538,7 +596,19 @@ bool apply_speed_limit(uint8_t* target_current, uint8_t throttle_percent, bool t
 	if (global_throttle_limit_active)
 	{
 		// use configured global throttle override speed limit
-		max_speed_rpm_x10 = global_throttle_speed_limit_rpm_x10;
+		//max_speed_rpm_x10 = global_throttle_speed_limit_rpm_x10;
+
+		if (pas_is_pedaling_forwards() && pas_get_pulse_counter() > g_config.pas_start_delay_pulses)
+		{
+			// pedals are moving - use configured STANDARD assist level speed limits (25 kph for all STANDARD MODE PAS levels)
+			max_speed_rpm_x10 = assist_level_data.max_wheel_speed_rpm_x10;
+		}
+		else 
+		{
+			// throttle only, no pedalling - use configured global throttle override speed limit (6 kph globally )
+			max_speed_rpm_x10 = global_throttle_speed_limit_rpm_x10;
+		}
+
 	}
 	else if (throttle_speed_override_active)
 	{
@@ -552,7 +622,8 @@ bool apply_speed_limit(uint8_t* target_current, uint8_t throttle_percent, bool t
 	}
 
 	int32_t max_speed_ramp_low_rpm_x10 = max_speed_rpm_x10 - speed_limit_ramp_interval_rpm_x10;
-	int32_t max_speed_ramp_high_rpm_x10 = max_speed_rpm_x10 + speed_limit_ramp_interval_rpm_x10;
+	//int32_t max_speed_ramp_high_rpm_x10 = max_speed_rpm_x10 + speed_limit_ramp_interval_rpm_x10;
+	int32_t max_speed_ramp_high_rpm_x10 = max_speed_rpm_x10;
 
 	if (max_speed_rpm_x10 > 0)
 	{
@@ -577,16 +648,30 @@ bool apply_speed_limit(uint8_t* target_current, uint8_t throttle_percent, bool t
 
 			if (current_speed_rpm_x10 > max_speed_ramp_high_rpm_x10)
 			{
-				if (*target_current > 1)
+				//if (*target_current > 1)
+				if (*target_current > 0)
 				{
-					*target_current = 1;
+					//*target_current = 1;
+					//return true;
+					// Standard / Legal Mode
+					if (operation_mode == OPERATION_MODE_DEFAULT)
+					{
+						*target_current = 0; // NO assistance after speed limit
+					}
+					// SPORT MODE
+					else 
+					{
+						*target_current = 1; // small assistance in order to better keep speed / cruise control
+					}
+
 					return true;
 				}
 			}
 			else
 			{
 				// linear ramp down when approaching max speed.
-				uint8_t tmp = (uint8_t)MAP32(current_speed_rpm_x10, max_speed_ramp_low_rpm_x10, max_speed_ramp_high_rpm_x10, *target_current, 1);
+				//uint8_t tmp = (uint8_t)MAP32(current_speed_rpm_x10, max_speed_ramp_low_rpm_x10, max_speed_ramp_high_rpm_x10, *target_current, 1);
+				uint8_t tmp = (uint8_t)MAP32(current_speed_rpm_x10, max_speed_ramp_low_rpm_x10, max_speed_rpm_x10, *target_current, 1);
 				if (*target_current > tmp)
 				{
 					*target_current = tmp;

@@ -24,5 +24,10 @@ namespace BBSFW
 		{
 			InitializeComponent();
 		}
+
+		private void SystemView_Loaded(object sender, RoutedEventArgs e)
+		{
+
+		}
 	}
 }

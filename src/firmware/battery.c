@@ -128,16 +128,16 @@ void battery_process()
 	{
 		uint8_t target_current = motor_get_target_current();
 
-		if (motor_disabled_at_ms == 0 && target_current == 0)
+		if (motor_disabled_at_ms == 0 && target_current == BATTERY_COMPUTE_PCT_CUTOFF)
 		{
 			motor_disabled_at_ms = system_ms();
 		}
-		else if (target_current > 0)
+		else if (target_current > BATTERY_COMPUTE_PCT_CUTOFF)
 		{
 			motor_disabled_at_ms = 0;
 		}
 
-		if (target_current == 0 && (system_ms() - motor_disabled_at_ms) > BATTERY_NO_LOAD_DELAY_MS)
+		if (target_current <= BATTERY_COMPUTE_PCT_CUTOFF && (system_ms() - motor_disabled_at_ms) > BATTERY_NO_LOAD_DELAY_MS)
 		{
 			battery_percent = compute_battery_percent();
 		}

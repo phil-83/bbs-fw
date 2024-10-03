@@ -50,7 +50,7 @@
 #endif
 
  // Applied to both motor and controller tmeperature sensor
-#define MAX_TEMPERATURE							85
+#define MAX_TEMPERATURE							75
 
 // Current ramp down starts at MAX_TEMPERATURE - 5.
 #define MAX_TEMPERATURE_RAMP_DOWN_INTERVAL		5
@@ -74,8 +74,9 @@
 #define BATTERY_NO_LOAD_DELAY_MS		2000
 
 // Padding values for voltage range of battery.
-#define BATTERY_FULL_OFFSET_PERCENT		8
-#define BATTERY_EMPTY_OFFSET_PERCENT	8
+#define BATTERY_FULL_OFFSET_PERCENT		5
+#define BATTERY_EMPTY_OFFSET_PERCENT	5
+#define BATTERY_COMPUTE_PCT_CUTOFF      2
 
 // Battery SOC percentage when current ramp down starts.
 #define LVC_RAMP_DOWN_OFFSET_PERCENT			10
